@@ -90,3 +90,30 @@ test("importa hash pbkdf2 do painel-auth", async () => {
   assert.ok(verifyPassword("senha-antiga", h));
   assert.ok(!verifyPassword("outra", h));
 });
+
+test("setores do usuário chegam aos Treinamentos pelo /sso/quem", async () => {
+  const { cookie: adm } = await login("luis.felipe", "Tflnx155@");
+  let r = await fetch(`${base}/api/setores`, { headers: { Cookie: adm } });
+  const { setores } = await r.json();
+  assert.ok(setores.some((s) => s.id === "atendimento"));
+  r = await fetch(`${base}/api/users`, { method: "POST", headers: { ...H, Cookie: adm },
+    body: JSON.stringify({ username: "ana.n1", name: "Ana N1", password: "senha-forte-2", role: "atendimento", sistemas: ["treinamentos"], setores: ["atendimento", "inexistente"] }) });
+  assert.equal(r.status, 201);
+  assert.deepEqual((await r.json()).user.setores, ["atendimento"]);
+  const { cookie } = await login("ana.n1", "senha-forte-2");
+  r = await fetch(`${base}/sso/quem?sistema=treinamentos,treinamentos-editor`, { headers: { Cookie: cookie } });
+  assert.equal(r.status, 200);
+  const q = await r.json();
+  assert.deepEqual(q.sistemas, ["treinamentos"]);
+  assert.deepEqual(q.user.setores, ["atendimento"]);
+  assert.equal(q.user.admin, false);
+  assert.equal((await fetch(`${base}/sso/quem?sistema=olts`, { headers: { Cookie: cookie } })).status, 403);
+  assert.equal((await fetch(`${base}/sso/quem?sistema=treinamentos`)).status, 401);
+  // renomear o catálogo remove setores que deixaram de existir
+  r = await fetch(`${base}/api/setores`, { method: "PUT", headers: { ...H, Cookie: adm }, body: JSON.stringify({ setores: [{ nome: "NOC", cor: "#0B0FEE" }] }) });
+  assert.equal(r.status, 200);
+  const u = (await (await fetch(`${base}/api/users`, { headers: { Cookie: adm } })).json()).users.find((x) => x.username === "ana.n1");
+  assert.deepEqual(u.setores, []);
+  // apenas admin edita setores
+  assert.equal((await fetch(`${base}/api/setores`, { method: "PUT", headers: { ...H, Cookie: cookie }, body: "{}" })).status, 403);
+});

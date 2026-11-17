@@ -30,6 +30,8 @@ Ele é criado no primeiro start, em `data/users.json`.
 | Alertas PON / CTO | `https://monitoramento.updown.com.br:8446/` | login único (nginx) |
 | Documentação | `https://documentacao.noc.updown.com.br/` | login único (nginx) |
 | IA NOC | `https://nia.updown.com.br/` | mesmo login via API |
+| Treinamentos UPDOWN | `https://treinamentos.updown.com.br/` | login único + setores via `/sso/quem` |
+| Treinamentos · Editor | `https://treinamentos.updown.com.br/#/gerenciar` | libera criar/editar treinamentos |
 
 Os destinos ficam editáveis na tela **Redirecionamentos** (a semente está em `config/sistemas.json`).
 
@@ -47,6 +49,10 @@ Os destinos ficam editáveis na tela **Redirecionamentos** (a semente está em `
 3. **IA NOC**: os usuários entram com o mesmo login pela API compatível `/sso/ianoc/api/auth/{login,me,logout}`.
    Os dados do IA NOC continuam vindo do `sistema.updown.com.br`. Aplique `integracoes/ianoc/ianoc-login-portal.patch`
    no repositório IANOC e configure `NOC_AUTH_URL=https://portal.updown.com.br/sso/ianoc` (mantenha `NOC_API_URL=https://sistema.updown.com.br`).
+
+4. **Treinamentos UPDOWN** ([treinamentosprov](https://github.com/FelpLuis/treinamentosprov)): o servidor dos treinamentos chama
+   `GET /sso/quem?sistema=treinamentos,treinamentos-editor` repassando o cookie e recebe o usuário, os **setores** dele e
+   quais dos dois acessos ele tem. Os setores são cadastrados em **Usuários → Setores** e marcados em cada usuário.
 
 Desativar um usuário, trocar a senha ou "derrubar sessões" corta o acesso em todas as plataformas
 (nos painéis via nginx, em até 30 s por causa do cache do `auth_request`).
