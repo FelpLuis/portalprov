@@ -1,0 +1,10 @@
+{
+  "setores": [
+    { "id": "atendimento", "nome": "Atendimento / Suporte N1", "cor": "#0BBBEF", "descricao": "Help desk, chat e ligações com o cliente." },
+    { "id": "comercial", "nome": "Comercial", "cor": "#9B00FF", "descricao": "Vendas, planos, SVAs, cadastro e contratos." },
+    { "id": "noc", "nome": "NOC", "cor": "#0B0FEE", "descricao": "Rede, OLTs, BRAS, switches e monitoramento." },
+    { "id": "campo", "nome": "Técnicos de campo", "cor": "#12B76A", "descricao": "Instalação, provisionamento, CTO e manutenção externa." },
+    { "id": "financeiro", "nome": "Financeiro", "cor": "#F79009", "descricao": "Cobranças, vencimentos, liberações e suspensões." },
+    { "id": "administrativo", "nome": "Administrativo", "cor": "#140075", "descricao": "Gestão, RH e processos internos." }
+  ]
+}

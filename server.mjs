@@ -5,6 +5,7 @@
 // - Provedor de login único para as plataformas:
 //     * nginx (auth_request) → GET /sso/verificar?sistema=<id>   (painéis do nocup, documentação)
 //     * API compatível com o login do sistema NOC → /sso/<id>/api/auth/{login,me,logout}  (IA NOC)
+//     * identidade + setores → GET /sso/quem?sistema=<id>   (Treinamentos UPDOWN)
 //
 // Sem dependências: só Node.js (>= 18).
 import http from "node:http";
@@ -21,6 +22,8 @@ const SISTEMAS_FILE = path.join(DATA_DIR, "sistemas.json");
 const SECRET_FILE = path.join(DATA_DIR, "secret.key");
 const AUDIT_FILE = path.join(DATA_DIR, "audit.log");
 const SISTEMAS_SEED = path.join(ROOT, "config", "sistemas.json");
+const SETORES_FILE = path.join(DATA_DIR, "setores.json");
+const SETORES_SEED = path.join(ROOT, "config", "setores.json");
 
 const PORT = Number(process.env.PORT || 8790);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -83,6 +86,7 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(12).toString("hex"));
 // ================================================================ dados
 let users = [];
 let sistemas = { grupos: [], sistemas: [] };
+let setores = [];
 let SECRET;
 
 function ensureDataDir() {
@@ -99,6 +103,7 @@ let chain = Promise.resolve();
 const serial = (fn) => (chain = chain.then(fn, fn));
 const saveUsers = () => serial(() => writeJsonAtomic(USERS_FILE, { users }));
 const saveSistemas = () => serial(() => writeJsonAtomic(SISTEMAS_FILE, sistemas));
+const saveSetores = () => serial(() => writeJsonAtomic(SETORES_FILE, { setores }));
 
 async function loadAll() {
   ensureDataDir();
@@ -117,10 +122,28 @@ async function loadAll() {
   if (!existsSync(SISTEMAS_FILE)) {
     sistemas = JSON.parse(await fs.readFile(SISTEMAS_SEED, "utf8"));
     const now = new Date().toISOString();
-    sistemas.sistemas = sistemas.sistemas.map((s) => ({ ativo: true, criado_em: now, ...s }));
+    sistemas.sistemas = sistemas.sistemas.map(({ garantir, ...s }) => ({ ativo: true, criado_em: now, ...s }));
     await saveSistemas();
   } else {
     sistemas = JSON.parse(await fs.readFile(SISTEMAS_FILE, "utf8"));
+    // Sistemas novos da semente marcados com "garantir" entram em instalações que já existiam.
+    const seed = JSON.parse(await fs.readFile(SISTEMAS_SEED, "utf8"));
+    let mudou = false;
+    for (const g of seed.grupos) if (!sistemas.grupos.some((x) => x.id === g.id)) { sistemas.grupos.push(g); mudou = true; }
+    for (const s of seed.sistemas) {
+      if (!s.garantir || findSistema(s.id)) continue;
+      const { garantir, ...rest } = s;
+      sistemas.sistemas.push({ ativo: true, criado_em: new Date().toISOString(), ...rest });
+      mudou = true;
+    }
+    if (mudou) await saveSistemas();
+  }
+
+  if (!existsSync(SETORES_FILE)) {
+    setores = JSON.parse(await fs.readFile(SETORES_SEED, "utf8")).setores;
+    await saveSetores();
+  } else {
+    setores = JSON.parse(await fs.readFile(SETORES_FILE, "utf8")).setores || [];
   }
 }
 
@@ -131,7 +154,7 @@ const activeAdmins = () => users.filter((u) => isAdmin(u) && u.active);
 const canSee = (u, id) => isAdmin(u) || (u.sistemas || []).includes("*") || (u.sistemas || []).includes(id);
 
 const publicUser = (u) => ({
-  username: u.username, name: u.name, role: u.role, sistemas: u.sistemas, active: u.active,
+  username: u.username, name: u.name, role: u.role, sistemas: u.sistemas, setores: u.setores || [], active: u.active,
   created_at: u.created_at, updated_at: u.updated_at, last_login: u.last_login,
 });
 
@@ -342,6 +365,26 @@ function cleanSistemasList(list) {
   return [...new Set(list.filter((id) => valid.has(id)))];
 }
 
+function cleanSetoresList(list) {
+  if (!Array.isArray(list)) return [];
+  const valid = new Set(setores.map((s) => s.id));
+  return [...new Set(list.map(String).filter((id) => valid.has(id)))];
+}
+
+function validarSetores(body) {
+  if (!Array.isArray(body?.setores) || !body.setores.length) throw httpError(400, "Informe pelo menos um setor.");
+  const vistos = new Set();
+  return body.setores.slice(0, 60).map((x) => {
+    const nome = String(x?.nome || "").trim().slice(0, 50);
+    const id = String(x?.id || nome).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+    if (!nome || !ID_RE.test(id)) throw httpError(400, `Setor inválido: "${nome || id}".`);
+    if (vistos.has(id)) throw httpError(400, `Setor repetido: "${nome}".`);
+    vistos.add(id);
+    const cor = /^#[0-9a-f]{6}$/i.test(x?.cor || "") ? x.cor : "#0B0FEE";
+    return { id, nome, cor, descricao: String(x?.descricao || "").trim().slice(0, 140) };
+  });
+}
+
 const TIPOS = ["painel", "tv", "documentacao", "ia", "site", "aplicacao"];
 const SSO_MODOS = ["nginx", "api", "nenhum"];
 
@@ -457,6 +500,24 @@ async function handle(req, res) {
     });
   }
 
+  // Identidade para plataformas que precisam do setor do usuário (Treinamentos UPDOWN).
+  // Chamado servidor-a-servidor repassando o cookie do navegador.
+  // 200 = {user, sistemas (dos pedidos, os liberados), setores}, 401 = sem sessão, 403 = sem acesso.
+  if (p === "/sso/quem" && method === "GET") {
+    const pedidos = String(url.searchParams.get("sistema") || "").split(",").map((x) => x.trim()).filter(Boolean);
+    const sess = sessionFromReq(req);
+    if (!sess) return json(res, 401, { error: "Sem sessão." });
+    const liberados = pedidos.filter((id) => { const s = findSistema(id); return s && s.ativo && canSee(sess.user, id); });
+    if (pedidos.length && !liberados.length) return json(res, 403, { error: "Sem acesso." });
+    if (liberados[0]) auditSso(req, sess.user.username, liberados[0]);
+    const u = sess.user;
+    return json(res, 200, {
+      user: { username: u.username, name: u.name || u.username, role: u.role, setores: u.setores || [], admin: isAdmin(u) },
+      sistemas: liberados,
+      setores,
+    });
+  }
+
   // Entrada a partir de um sistema: /sso/entrar?sistema=olts&volta=https://monitoramento...:8443/
   if (p === "/sso/entrar" && method === "GET") {
     const volta = safeVolta(url.searchParams.get("volta"));
@@ -569,6 +630,18 @@ async function handle(req, res) {
     return json(res, 200, { grupos: sistemas.grupos, sistemas: lista, tipos: TIPOS, sso: SSO_MODOS });
   }
 
+  if (p === "/api/setores" && method === "GET") return json(res, 200, { setores });
+  if (p === "/api/setores" && method === "PUT") {
+    if (!admin) return json(res, 403, { error: "Só administradores." });
+    setores = validarSetores(await readJson(req));
+    const validos = new Set(setores.map((s) => s.id));
+    for (const u of users) if (Array.isArray(u.setores)) u.setores = u.setores.filter((id) => validos.has(id));
+    await saveSetores();
+    await saveUsers();
+    audit("setores_alterados", req, { username: me.username, total: setores.length });
+    return json(res, 200, { setores });
+  }
+
   if (p === "/api/status" && method === "GET") {
     const st = await checkStatus();
     return json(res, 200, { status: Object.fromEntries(Object.entries(st).filter(([id]) => canSee(me, id))) });
@@ -626,7 +699,7 @@ async function handle(req, res) {
   }
 
   // Usuários
-  if (p === "/api/users" && method === "GET") return json(res, 200, { users: users.map(publicUser), perfis: PERFIS });
+  if (p === "/api/users" && method === "GET") return json(res, 200, { users: users.map(publicUser), perfis: PERFIS, setores });
 
   if (p === "/api/users" && method === "POST") {
     const body = await readJson(req);
@@ -641,6 +714,7 @@ async function handle(req, res) {
       name: String(body.name || "").trim().slice(0, 80) || username,
       role: PERFIS.includes(body.role) ? body.role : "analista",
       sistemas: cleanSistemasList(body.sistemas),
+      setores: cleanSetoresList(body.setores),
       active: body.active !== false,
       sv: 0,
       password_hash: hashPassword(password),
@@ -676,6 +750,7 @@ async function handle(req, res) {
       }
       if (body.name !== undefined) target.name = String(body.name).trim().slice(0, 80) || target.username;
       if (body.sistemas !== undefined) target.sistemas = cleanSistemasList(body.sistemas);
+      if (body.setores !== undefined) target.setores = cleanSetoresList(body.setores);
       const revoga = (!active && target.active) || !!body.password;
       target.role = role;
       target.active = active;

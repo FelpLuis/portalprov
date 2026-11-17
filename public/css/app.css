@@ -400,3 +400,10 @@ html { transition: background-color .2s; }
 :root[data-theme="dark"] .cell-ico, :root[data-theme="dark"] .card-foot .abrir, :root[data-theme="dark"] .dest svg,
 :root[data-theme="dark"] .panel-head h2 svg, :root[data-theme="dark"] .drawer header h2 svg, :root[data-theme="dark"] .auth-foot a,
 :root[data-theme="dark"] #filtroSistema a { color: #9a9eff; }
+
+/* Setores (Treinamentos UPDOWN) */
+.dot-setor { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.setores-edit { display: grid; gap: 8px; margin: 12px 0; }
+.setor-row { display: grid; grid-template-columns: 38px 1fr 1.4fr 34px; gap: 8px; align-items: center; }
+.setor-row input[type=color] { width: 38px; height: 36px; padding: 2px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); }
+.setor-row input:not([type=color]) { height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font: inherit; min-width: 0; }

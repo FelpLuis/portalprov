@@ -14,6 +14,11 @@
       "id": "ia",
       "nome": "Inteligência",
       "descricao": "Assistente do NOC"
+    },
+    {
+      "id": "treinamentos",
+      "nome": "Treinamentos",
+      "descricao": "Manuais, passo a passo e cursos"
     }
   ],
   "sistemas": [
@@ -100,6 +105,32 @@
       "tipo": "ia",
       "sso": "api",
       "porta": null
+    },
+    {
+      "id": "treinamentos",
+      "grupo": "treinamentos",
+      "nome": "Treinamentos UPDOWN",
+      "descricao": "Manuais, treinamentos e passo a passo por setor, com busca por dúvida.",
+      "url": "https://treinamentos.updown.com.br/",
+      "icone": "doc",
+      "repo": "portalprov",
+      "tipo": "aplicacao",
+      "sso": "api",
+      "porta": null,
+      "garantir": true
+    },
+    {
+      "id": "treinamentos-editor",
+      "grupo": "treinamentos",
+      "nome": "Treinamentos · Editor",
+      "descricao": "Criar e editar treinamentos (imagens, vídeos e animações).",
+      "url": "https://treinamentos.updown.com.br/#/gerenciar",
+      "icone": "edit",
+      "repo": "portalprov",
+      "tipo": "aplicacao",
+      "sso": "api",
+      "porta": null,
+      "garantir": true
     }
   ]
 }

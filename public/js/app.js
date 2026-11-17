@@ -312,8 +312,10 @@
   // ============================================================ USUÁRIOS
   async function telaUsuarios() {
     await carregarSistemas();
-    const [{ users, perfis }, st] = await Promise.all([api("/api/users"), api("/api/admin/stats?dias=30")]);
+    const [{ users, perfis, setores }, st] = await Promise.all([api("/api/users"), api("/api/admin/stats?dias=30")]);
     S.perfis = perfis;
+    S.setores = setores || [];
+    const nomeSetor = (id) => (S.setores.find((x) => x.id === id) || {}).nome || id;
     const ativos = users.filter((u) => u.active).length;
     view.innerHTML = `
       ${cabecalho("users", "Usuários", "O login e a senha criados aqui são os mesmos usados em todas as plataformas.")}
@@ -326,9 +328,10 @@
       <section class="panel">
         <div class="panel-head"><h2>${icon("list", 2)}Usuários cadastrados</h2>
           <div class="right"><label class="search">${icon("search")}<input id="buscaU" type="search" placeholder="Buscar usuário…"></label>
+          <button class="btn btn-light" id="setoresU" title="Setores usados nos Treinamentos UPDOWN">${icon("list", 2)}Setores</button>
           <button class="btn btn-primary" id="novoU">${icon("plus", 2.2)}Novo usuário</button></div></div>
         <div class="table-wrap"><table class="tbl">
-          <thead><tr><th>Usuário</th><th>Perfil</th><th>Acesso</th><th>Status</th><th>Último login</th><th class="r">Acessos (30d)</th><th class="r">Ações</th></tr></thead>
+          <thead><tr><th>Usuário</th><th>Perfil</th><th>Setor</th><th>Acesso</th><th>Status</th><th>Último login</th><th class="r">Acessos (30d)</th><th class="r">Ações</th></tr></thead>
           <tbody id="linhasU"></tbody></table></div>
       </section>`;
 
@@ -341,6 +344,7 @@
         return `<tr>
           <td><div class="cell-main"><span class="avatar">${esc((u.name || u.username).split(/[\s.]+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join("").toUpperCase())}</span><div>${esc(u.name)}<small>${esc(u.username)}</small></div></div></td>
           <td><span class="tag ${u.role === "administrador" ? "tag-admin" : "tag-site"}">${esc(ROTULO_PERFIL[u.role] || u.role)}</span></td>
+          <td>${(u.setores || []).length ? u.setores.map((id) => `<span class="tag tag-site">${esc(nomeSetor(id))}</span>`).join(" ") : '<span class="muted">—</span>'}</td>
           <td title="${esc(todos ? "" : (u.sistemas || []).map(nomeSistema).join(", "))}">${esc(acesso)}</td>
           <td>${u.active ? '<span class="tag tag-ok"><span class="d"></span>Ativo</span>' : '<span class="tag tag-off"><span class="d"></span>Desativado</span>'}</td>
           <td class="muted">${quando(u.last_login)}</td>
@@ -349,12 +353,13 @@
             <button class="icon-btn edit" data-edit="${esc(u.username)}" title="Editar">${icon("edit", 2)}</button>
             <button class="icon-btn del" data-del="${esc(u.username)}" title="Excluir" ${u.username === S.me.username ? "disabled" : ""}>${icon("trash", 2)}</button>
           </div></td></tr>`;
-      }).join("") : '<tr class="empty-row"><td colspan="7">Nenhum usuário encontrado.</td></tr>';
+      }).join("") : '<tr class="empty-row"><td colspan="8">Nenhum usuário encontrado.</td></tr>';
     };
     desenhar();
     $("#buscaU").addEventListener("input", desenhar);
     const recarregar = async () => { const d = await api("/api/users"); users.splice(0, users.length, ...d.users); desenhar(); };
     $("#novoU").addEventListener("click", () => gavetaUsuario(null, recarregar));
+    $("#setoresU").addEventListener("click", () => gavetaSetores(async () => { S.setores = (await api("/api/setores")).setores; await recarregar(); }));
     $("#linhasU").addEventListener("click", async (e) => {
       const b = e.target.closest("button"); if (!b || b.disabled) return;
       if (b.dataset.edit) gavetaUsuario(users.find((u) => u.username === b.dataset.edit), recarregar);
@@ -385,6 +390,11 @@
           <label class="field full"><span>${novo ? 'Senha <b class="req">*</b>' : "Nova senha <small class=\"muted\">(deixe em branco para manter)</small>"}</span>
             <div class="pw"><input name="password" id="uSenha" type="text" autocomplete="new-password" placeholder="mínimo 8 caracteres">
             <button type="button" class="pw-toggle" id="gerar">Gerar</button></div></label>
+        </div>
+        <div class="field"><span>Setores <small class="muted">(definem os treinamentos que o usuário vê)</small></span>
+          <div class="perm-list" id="setoresSel">
+            ${(S.setores || []).map((x) => `<label class="check"><input type="checkbox" value="${esc(x.id)}" ${(u?.setores || []).includes(x.id) ? "checked" : ""}> <span class="dot-setor" style="background:${esc(x.cor)}"></span>${esc(x.nome)}</label>`).join("") || '<small class="muted">Nenhum setor cadastrado.</small>'}
+          </div>
         </div>
         <div class="field"><span>Acesso às plataformas</span>
           <div class="perm-list" id="perms">
@@ -437,7 +447,8 @@
       e.preventDefault();
       const err = d.querySelector("#uErro"); err.hidden = true;
       const sistemas = [...perms.querySelectorAll("input:checked")].map((c) => c.value);
-      const body = { name: f.name.value, role: f.role.value, active: f.active.checked, sistemas: sistemas.includes("*") ? ["*"] : sistemas };
+      const setoresU = [...d.querySelectorAll("#setoresSel input:checked")].map((c) => c.value);
+      const body = { name: f.name.value, role: f.role.value, active: f.active.checked, sistemas: sistemas.includes("*") ? ["*"] : sistemas, setores: setoresU };
       if (f.password.value) body.password = f.password.value;
       try {
         if (novo) {
@@ -452,6 +463,46 @@
       } catch (ex) { err.textContent = ex.message; err.hidden = false; }
     });
     setTimeout(() => (novo ? f.name : f.name).focus(), 50);
+  }
+
+  // Setores (catálogo usado pelos Treinamentos UPDOWN)
+  function gavetaSetores(aoSalvar) {
+    fecharGaveta();
+    let lista = (S.setores || []).map((x) => ({ ...x }));
+    const bg = document.createElement("div"); bg.className = "drawer-bg";
+    const d = document.createElement("aside"); d.className = "drawer"; d.setAttribute("role", "dialog"); d.setAttribute("aria-modal", "true");
+    d.innerHTML = `
+      <header><h2>${icon("list", 2)}Setores</h2><button class="icon-btn" data-x aria-label="Fechar">${icon("x", 2)}</button></header>
+      <div class="body">
+        <p class="muted">Cada usuário pode pertencer a um ou mais setores. Nos Treinamentos UPDOWN ele vê os conteúdos dos seus setores e os marcados para todos.</p>
+        <div id="listaSetores" class="setores-edit"></div>
+        <button class="btn btn-light" type="button" id="addSetor">${icon("plus", 2)}Adicionar setor</button>
+        <p class="form-error" id="sErro" hidden></p>
+      </div>
+      <footer><span class="grow"></span><button class="btn btn-light" type="button" data-x>Cancelar</button>
+        <button class="btn btn-primary" type="button" id="salvarSetores">${icon("save", 2)}Salvar</button></footer>`;
+    document.body.append(bg, d);
+    const box = d.querySelector("#listaSetores");
+    const desenhar = () => {
+      box.innerHTML = lista.map((x, i) => `
+        <div class="setor-row" data-i="${i}">
+          <input type="color" value="${esc(x.cor || "#0B0FEE")}" data-k="cor" aria-label="Cor">
+          <input value="${esc(x.nome)}" data-k="nome" placeholder="Nome do setor" maxlength="50">
+          <input value="${esc(x.descricao || "")}" data-k="descricao" placeholder="Descrição (opcional)" maxlength="140">
+          <button class="icon-btn del" type="button" data-rm="${i}" title="Remover">${icon("trash", 2)}</button>
+        </div>`).join("");
+    };
+    desenhar();
+    box.addEventListener("input", (e) => { const r = e.target.closest(".setor-row"); if (r && e.target.dataset.k) lista[+r.dataset.i][e.target.dataset.k] = e.target.value; });
+    box.addEventListener("click", (e) => { const b = e.target.closest("[data-rm]"); if (b) { lista.splice(+b.dataset.rm, 1); desenhar(); } });
+    d.querySelector("#addSetor").addEventListener("click", () => { lista.push({ nome: "", cor: "#0BBBEF", descricao: "" }); desenhar(); box.querySelector(".setor-row:last-child [data-k=nome]").focus(); });
+    d.querySelectorAll("[data-x]").forEach((b) => b.addEventListener("click", fecharGaveta));
+    bg.addEventListener("click", fecharGaveta);
+    d.querySelector("#salvarSetores").addEventListener("click", async () => {
+      const err = d.querySelector("#sErro"); err.hidden = true;
+      try { await api("/api/setores", { method: "PUT", body: { setores: lista.filter((x) => x.nome.trim()) } }); fecharGaveta(); toast("Setores salvos."); aoSalvar(); }
+      catch (ex) { err.textContent = ex.message; err.hidden = false; }
+    });
   }
 
   // ============================================================ LOGS
