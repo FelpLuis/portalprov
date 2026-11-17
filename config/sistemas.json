@@ -1,0 +1,105 @@
+{
+  "grupos": [
+    {
+      "id": "monitoramento",
+      "nome": "Monitoramento",
+      "descricao": "monitoramento.updown.com.br"
+    },
+    {
+      "id": "documentacao",
+      "nome": "Documentação",
+      "descricao": "Racks, interfaces e OLTs"
+    },
+    {
+      "id": "ia",
+      "nome": "Inteligência",
+      "descricao": "Assistente do NOC"
+    }
+  ],
+  "sistemas": [
+    {
+      "id": "olts",
+      "grupo": "monitoramento",
+      "nome": "Painel das OLTs",
+      "descricao": "Tráfego PON, CPU, memória e temperatura da C300 e da C350.",
+      "url": "https://monitoramento.updown.com.br:8443/",
+      "icone": "olt",
+      "repo": "nocup",
+      "tipo": "painel",
+      "sso": "nginx",
+      "porta": 8443
+    },
+    {
+      "id": "links",
+      "grupo": "monitoramento",
+      "nome": "Painel de Links",
+      "descricao": "RX/TX dos upstreams, PNIs e enlaces do backbone.",
+      "url": "https://monitoramento.updown.com.br:9443/",
+      "icone": "links",
+      "repo": "nocup",
+      "tipo": "painel",
+      "sso": "nginx",
+      "porta": 9443
+    },
+    {
+      "id": "tv-links",
+      "grupo": "monitoramento",
+      "nome": "TV · Links",
+      "descricao": "Tela de TV dos links para o telão do NOC.",
+      "url": "https://monitoramento.updown.com.br:9443/tv",
+      "icone": "tv",
+      "repo": "nocup",
+      "tipo": "tv",
+      "sso": "nginx",
+      "porta": 9443
+    },
+    {
+      "id": "tv-isp",
+      "grupo": "monitoramento",
+      "nome": "TV · ISP",
+      "descricao": "Tela de TV dos ISPs atendidos.",
+      "url": "https://monitoramento.updown.com.br:9443/tv-isp",
+      "icone": "tv",
+      "repo": "nocup",
+      "tipo": "tv",
+      "sso": "nginx",
+      "porta": 9443
+    },
+    {
+      "id": "pon",
+      "grupo": "monitoramento",
+      "nome": "Alertas PON / CTO",
+      "descricao": "PONs e CTOs inteiras down agora, com clientes afetados.",
+      "url": "https://monitoramento.updown.com.br:8446/",
+      "icone": "alerta",
+      "repo": "nocup",
+      "tipo": "painel",
+      "sso": "nginx",
+      "porta": 8446
+    },
+    {
+      "id": "documentacao",
+      "grupo": "documentacao",
+      "nome": "Documentação de equipamentos",
+      "descricao": "Racks 3D por site, interfaces editáveis e dados do Zabbix.",
+      "url": "https://documentacao.noc.updown.com.br/",
+      "icone": "doc",
+      "repo": "nocup",
+      "tipo": "documentacao",
+      "sso": "nginx",
+      "porta": null
+    },
+    {
+      "id": "ianoc",
+      "grupo": "ia",
+      "nome": "IA NOC",
+      "descricao": "Assistente virtual: alarmes, impacto, O.S. do IXC e fila do Opa!",
+      "url": "https://nia.updown.com.br/",
+      "icone": "ia",
+      "repo": "IANOC",
+      "tipo": "ia",
+      "sso": "api",
+      "porta": null
+    }
+  ]
+}

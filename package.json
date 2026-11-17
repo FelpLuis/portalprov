@@ -1,0 +1,15 @@
+{
+  "name": "updown-portal-noc",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Portal de acesso do NOC UPDOWN: login único, gestão de usuários e redirecionamento para as plataformas.",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "COOKIE_SECURE=0 node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check server.mjs && node --check public/js/app.js && node --check public/js/common.js && node --check public/js/login.js && node --check public/js/theme.js",
+    "importar-painel-auth": "node server.mjs importar-painel-auth"
+  }
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=Portal NOC UPDOWN (login único e redirecionamentos)
+After=network.target
+
+[Service]
+User=portal-noc
+Group=portal-noc
+WorkingDirectory=/opt/portal-noc
+EnvironmentFile=/etc/portal-noc.env
+ExecStart=/usr/bin/node server.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/portal-noc
+
+[Install]
+WantedBy=multi-user.target

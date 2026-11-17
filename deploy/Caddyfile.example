@@ -1,0 +1,7 @@
+# Portal NOC — o Caddy emite o certificado sozinho (80/443 abertos e DNS apontado).
+portal.updown.com.br {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:8790 {
+    header_up X-Real-IP {remote_host}
+  }
+}

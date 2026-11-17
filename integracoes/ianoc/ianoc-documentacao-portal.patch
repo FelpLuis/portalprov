@@ -1,0 +1,672 @@
+From 577aeb28b08e43fd31778e77c7f05e86fe142dec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 15:12:53 -0300
+Subject: [PATCH] =?UTF-8?q?IA=20NOC:=20troca=20o=20sistema.updown.com.br?=
+ =?UTF-8?q?=20pela=20Documenta=C3=A7=C3=A3o=20do=20NOC=20e=20pelo=20Portal?=
+ =?UTF-8?q?=20NOC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Novo conector "doc" (documentacao.noc.updown.com.br): equipamentos, portas,
+  racks e o espelho do Zabbix; entra pelo login único do Portal NOC (DOC_AUTH=portal)
+  ou pelo login próprio da documentação (DOC_AUTH=local)
+- Base de conhecimento do backbone vem da documentação: equipamentos, POPs por site
+  e enlaces deduzidos das descrições das portas (só portas físicas e LAGs)
+- Ferramentas doc_equipamentos, doc_interfaces e doc_pon; motor nativo usa doc_pon
+  para ONUs/PONs com sinal ruim
+- Login dos usuários pelo Portal NOC (NOC_AUTH_URL), mesmo usuário e senha
+- Sistema NOC antigo (NOC_API_URL) desativado por padrão
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01J4jxMoQy3QBJfwWsEaavsP
+---
+ README.md                         |   4 +-
+ backend/src/auth.ts               |   4 +-
+ backend/src/index.ts              |   2 +-
+ backend/src/noc/config.ts         |  26 +++++-
+ backend/src/noc/connectors/doc.ts | 136 ++++++++++++++++++++++++++++++
+ backend/src/noc/knowledge.ts      | 110 +++++++++++++++++++++++-
+ backend/src/noc/native/engine.ts  |  17 +++-
+ backend/src/noc/prompt.ts         |   7 +-
+ backend/src/noc/tools.ts          |  76 ++++++++++++++++-
+ deploy/deploy.sh                  |   2 +-
+ deploy/ianoc.env.example          |  25 ++++--
+ deploy/install.sh                 |   3 +-
+ 12 files changed, 389 insertions(+), 23 deletions(-)
+ create mode 100644 backend/src/noc/connectors/doc.ts
+
+diff --git a/README.md b/README.md
+index fb6b563..08e86b6 100644
+--- a/README.md
++++ b/README.md
+@@ -60,7 +60,9 @@ e onde fazer, e um humano executa.
+ 
+ | Ambiente | O que o assistente consulta | Variáveis em `backend/.env` |
+ |---|---|---|
+-| Sistema NOC (sistema.updown.com.br) | topologia, interfaces/tráfego/enlaces do Zabbix, ONUs das OLTs ZTE C300/C350 com sinal RX/TX, histórico GPON, log RADIUS, clientes do IXC, tickets | `NOC_API_URL`, `NOC_API_USER`, `NOC_API_PASSWORD` |
++| Documentação do NOC (documentacao.noc.updown.com.br) | equipamentos, portas, racks e sites do backbone; enlaces deduzidos das descrições das portas; espelho do Zabbix (status, velocidade, RX/TX óptico, tráfego) e resumo das PONs das OLTs (ONUs, RX médio, sinal baixo, pior ONU) | `DOC_API_URL`, `DOC_AUTH`, `DOC_LOGIN_URL`, `DOC_API_USER`, `DOC_API_PASSWORD` |
++| Portal NOC (login único) | login dos usuários do assistente — mesmo usuário e senha do portal | `NOC_AUTH_URL` |
++| ~~Sistema NOC (sistema.updown.com.br)~~ | desativado; só volta a ser usado se `NOC_API_URL` for preenchido | `NOC_API_URL` |
+ | Zabbix (até 3 instâncias) | alarmes ativos, relatório de eventos de um período (hosts que mais caíram, tempo em problema, recorrências) e qualquer consulta `.get` | `ZABBIX_URL` + `ZABBIX_TOKEN` ou `ZABBIX_USER`/`ZABBIX_PASSWORD`; `ZABBIX2_*`, `ZABBIX3_*` |
+ | GenieACS (TR-069) | CPE por serial/PPPoE, último inform, WAN, Wi-Fi, falhas, tarefas pendentes | `GENIEACS_NBI_URL` |
+ | IXC Soft | cliente, contrato, login PPPoE, O.S., financeiro (CPF/CNPJ mascarados), relatório de O.S. por período | `IXC_BASE_URL`, `IXC_API_TOKEN` |
+diff --git a/backend/src/auth.ts b/backend/src/auth.ts
+index 1e7b11d..bd2d2e7 100644
+--- a/backend/src/auth.ts
++++ b/backend/src/auth.ts
+@@ -124,7 +124,7 @@ const ipDe = (req: Request) => clientIp(req.socket.remoteAddress, req.headers['x
+ // ---------------------------------------------------------------- NOC
+ 
+ async function nocFetch(path: string, init: RequestInit = {}) {
+-  return fetch(`${nocConfig.noc.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(15000) });
++  return fetch(`${nocConfig.noc.authUrl}${path}`, { ...init, signal: AbortSignal.timeout(15000) });
+ }
+ 
+ function readCookie(header: string | undefined, name: string) {
+@@ -198,7 +198,7 @@ export async function handleLogin(req: Request, res: Response) {
+     return res.json({ ok: true, user, mustChangePassword: local.user.mustChange });
+   }
+ 
+-  if (SOMENTE_ADMIN || !nocConfig.noc.baseUrl) return res.status(401).json({ error: 'Usuário ou senha inválidos.' });
++  if (SOMENTE_ADMIN || !nocConfig.noc.authUrl) return res.status(401).json({ error: 'Usuário ou senha inválidos.' });
+ 
+   let data: { token?: string; user?: SessionUser & { must_change_password?: boolean }; error?: string };
+   let status: number;
+diff --git a/backend/src/index.ts b/backend/src/index.ts
+index a5bb581..df45c7b 100644
+--- a/backend/src/index.ts
++++ b/backend/src/index.ts
+@@ -685,7 +685,7 @@ async function startServer() {
+   server.listen(PORT, HOST, () => {
+     warmKokoro();
+     console.log(`🚀 IA NOC Agent server running on http://${HOST}:${PORT}`);
+-    console.log(`🔐 Login: ${authEnabled ? `usuário do NOC (${nocConfig.noc.baseUrl || 'NOC_API_URL não configurado!'})` : 'DESLIGADO (IANOC_AUTH=off)'}`);
++    console.log(`🔐 Login: ${authEnabled ? `Portal NOC (${nocConfig.noc.authUrl || 'NOC_AUTH_URL não configurado!'})` : 'DESLIGADO (IANOC_AUTH=off)'}`);
+     console.log(`🛡️  IPs liberados: ${process.env.IANOC_ALLOWED_IPS || 'qualquer um'}${acessoPublico ? ' · HTTPS aberto para qualquer rede (IANOC_ACESSO_PUBLICO)' : ''}`);
+     console.log(`🗂️  Varredura de projetos: ${PROJECT_TOOLS ? 'ligada' : 'desligada'}`);
+     console.log(`📡 WebSocket server ready`);
+diff --git a/backend/src/noc/config.ts b/backend/src/noc/config.ts
+index b8dc85e..fba644c 100644
+--- a/backend/src/noc/config.ts
++++ b/backend/src/noc/config.ts
+@@ -69,9 +69,28 @@ export const nocConfig = {
+     tpmLimit: Number(env('LLM_TPM_LIMIT') || (provider === 'groq' ? 8000 : 0)),
+   },
+ 
+-  /** Sistema NOC (Topologia) — sistema.updown.com.br. Proxy de Zabbix, GPON/OLT, RADIUS e clientes do IXC. */
++  /**
++   * Documentação de equipamentos do NOC (nocup) — documentacao.noc.updown.com.br.
++   * Fonte do backbone (equipamentos, portas, racks) e do espelho de interfaces do Zabbix.
++   */
++  doc: {
++    baseUrl: stripSlash(env('DOC_API_URL')),
++    // portal = login único do Portal NOC (cookie updown_sso); local = login da própria documentação; nenhum = sem login
++    auth: ((v) => (v === 'local' || v === 'nenhum' ? v : 'portal'))((env('DOC_AUTH') || 'portal').toLowerCase()) as 'portal' | 'local' | 'nenhum',
++    loginUrl: stripSlash(env('DOC_LOGIN_URL') || env('PORTAL_URL')),
++    username: env('DOC_API_USER'),
++    password: env('DOC_API_PASSWORD'),
++  },
++
++  /**
++   * Sistema NOC antigo (Topologia) — sistema.updown.com.br. DESATIVADO por padrão: o backbone
++   * agora vem da documentação (doc). Só liga se NOC_API_URL for preenchido.
++   */
+   noc: {
+     baseUrl: stripSlash(env('NOC_API_URL')),
++    // Login dos usuários do assistente: Portal NOC (SSO). Vazio = o próprio NOC_API_URL.
++    // Ex.: https://portal.updown.com.br/sso/ianoc
++    authUrl: stripSlash(env('NOC_AUTH_URL')) || stripSlash(env('NOC_API_URL')),
+     // Token de sessão fixo OU usuário de serviço (o assistente faz login e renova sozinho).
+     token: env('NOC_API_TOKEN'),
+     username: env('NOC_API_USER'),
+@@ -174,10 +193,13 @@ function opaBase(raw: string): string {
+   return `${origin}/api/v1`;
+ }
+ 
+-export type ConnectorName = 'noc' | 'zabbix' | 'genieacs' | 'ixc' | 'opa';
++export type ConnectorName = 'doc' | 'noc' | 'zabbix' | 'genieacs' | 'ixc' | 'opa';
+ 
+ export function connectorEnabled(name: ConnectorName): boolean {
+   switch (name) {
++    case 'doc':
++      return Boolean(nocConfig.doc.baseUrl && (nocConfig.doc.auth === 'nenhum'
++        || (nocConfig.doc.username && nocConfig.doc.password && (nocConfig.doc.auth === 'local' || nocConfig.doc.loginUrl))));
+     case 'noc':
+       return Boolean(nocConfig.noc.baseUrl && (nocConfig.noc.token || (nocConfig.noc.username && nocConfig.noc.password)));
+     case 'zabbix':
+diff --git a/backend/src/noc/connectors/doc.ts b/backend/src/noc/connectors/doc.ts
+new file mode 100644
+index 0000000..d3e73e0
+--- /dev/null
++++ b/backend/src/noc/connectors/doc.ts
+@@ -0,0 +1,136 @@
++/**
++ * Conector da Documentação de equipamentos do NOC (nocup/documentacao),
++ * servida em documentacao.noc.updown.com.br. Substitui o sistema NOC
++ * (sistema.updown.com.br) como fonte do backbone para o assistente.
++ *
++ * O que a documentação entrega:
++ *   GET /api/dados   → { doc: { devices: [{ id, name, model, site, role, mgmt, rack, notes,
++ *                        zabbix_hosts[], ports: [{ i, d, s, o, st }] }] } }
++ *   GET /api/zabbix  → { synced, hosts: { <nome>: { hostid, name, ip, ping, model, version,
++ *                        ifs: [{ i, a, st, sp, rx, tx, in, out, onus, rxm, low, worst }] } } }
++ *
++ * Autenticação (DOC_AUTH):
++ *   portal → entra no Portal NOC (login único) com o usuário de serviço e manda o cookie
++ *            updown_sso; o nginx da documentação valida no portal.
++ *   local  → login próprio da documentação (POST /login), cookie doc_noc.
++ *   nenhum → documentação sem login (só rede interna).
++ *
++ * Só leitura: o assistente nunca grava na documentação.
++ */
++
++import { nocConfig } from '../config.js';
++import { ConnectorError, fetchJson } from '../http.js';
++
++export interface DocPorta { i: string; d?: string; s?: string; o?: string; st?: string }
++export interface DocDevice {
++  id: string; name: string; model?: string; site?: string; role?: string; mgmt?: string;
++  rack?: string; notes?: string; zabbix_hosts?: string[]; ports?: DocPorta[];
++}
++export interface DocIf {
++  i: string; a?: string; st?: string; sp?: string; rx?: string; tx?: string; in?: number; out?: number;
++  onus?: string | number; rxm?: string; low?: string | number; worst?: string;
++}
++export interface DocHost { hostid: string; name: string; host?: string; ip?: string; ping?: string; model?: string; version?: string; sysname?: string; location?: string; ifs: DocIf[] }
++export interface DocZabbix { synced: string | null; erro?: string | null; intervalo_min?: number; hosts: Record<string, DocHost>; nao_encontrados?: string[] }
++
++let cookie: string | null = null;
++let loginInFlight: Promise<string> | null = null;
++
++function cookieDe(res: Response, nome: string): string | null {
++  const lista = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [res.headers.get('set-cookie') || ''];
++  for (const linha of lista) {
++    const par = linha.split(';')[0]?.trim() ?? '';
++    if (par.startsWith(`${nome}=`) && par.length > nome.length + 1) return par;
++  }
++  return null;
++}
++
++async function login(): Promise<string> {
++  const { baseUrl, auth, loginUrl, username, password } = nocConfig.doc;
++  if (auth === 'nenhum') return '';
++  if (!username || !password) throw new ConnectorError('doc', 'faltam DOC_API_USER e DOC_API_PASSWORD (usuário de serviço) para entrar na documentação.');
++
++  const portal = auth === 'portal';
++  const url = portal ? `${loginUrl}/api/login` : `${baseUrl}/login`;
++  const body = portal ? { username, password } : { usuario: username, senha: password, manter: true };
++  let res: Response;
++  try {
++    res = await fetch(url, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(portal ? { 'X-Portal': '1' } : {}) },
++      body: JSON.stringify(body),
++      redirect: 'manual',
++      signal: AbortSignal.timeout(nocConfig.http.timeoutMs),
++    });
++  } catch (error) {
++    throw new ConnectorError('doc', `sem resposta de ${new URL(url).host}: ${error instanceof Error ? error.message : error}`);
++  }
++  const c = cookieDe(res, portal ? 'updown_sso' : 'doc_noc');
++  if (!res.ok && !(res.status >= 300 && res.status < 400) || !c) {
++    const txt = (await res.text().catch(() => '')).slice(0, 200);
++    throw new ConnectorError('doc', `login do usuário de serviço "${username}" recusado ${portal ? 'pelo Portal NOC' : 'pela documentação'} (HTTP ${res.status}) ${txt}`, res.status);
++  }
++  return c;
++}
++
++async function ensureCookie(forceRenew = false): Promise<string> {
++  if (cookie !== null && !forceRenew) return cookie;
++  loginInFlight ??= login().finally(() => { loginInFlight = null; });
++  cookie = await loginInFlight;
++  return cookie;
++}
++
++/** GET autenticado na documentação. Renova a sessão uma vez em 401/302 (sessão expirada). */
++export async function docGet<T = unknown>(pathname: string): Promise<T> {
++  const url = new URL(pathname, `${nocConfig.doc.baseUrl}/`).toString();
++  const call = async (c: string) => (await fetchJson<T>('doc', url, {
++    headers: { Accept: 'application/json', ...(c ? { Cookie: c } : {}) },
++    redirect: 'manual',
++  })).data;
++  try {
++    const data = await call(await ensureCookie());
++    // nginx do portal redireciona para o login quando a sessão não vale: vem 302 com corpo vazio.
++    if (data === null || typeof data === 'string') throw new ConnectorError('doc', 'sessão expirada', 401);
++    return data;
++  } catch (error) {
++    if (error instanceof ConnectorError && (error.status === 401 || error.status === 302) && nocConfig.doc.auth !== 'nenhum') {
++      return call(await ensureCookie(true));
++    }
++    if (error instanceof ConnectorError && error.status === 403) {
++      throw new ConnectorError('doc', `o usuário de serviço não tem acesso à documentação no Portal NOC (libere o sistema "documentacao" para ele).`, 403);
++    }
++    throw error;
++  }
++}
++
++// Cache curto: a documentação muda pouco e o Zabbix dela já é um espelho periódico.
++const CACHE_MS = 60_000;
++let dadosCache: { at: number; v: DocDevice[] } | null = null;
++let zbxCache: { at: number; v: DocZabbix } | null = null;
++
++export async function docDevices(force = false): Promise<DocDevice[]> {
++  if (!force && dadosCache && Date.now() - dadosCache.at < CACHE_MS) return dadosCache.v;
++  const r = await docGet<{ doc?: { devices?: DocDevice[] } }>('/api/dados');
++  const v = Array.isArray(r?.doc?.devices) ? r.doc!.devices! : [];
++  dadosCache = { at: Date.now(), v };
++  return v;
++}
++
++export async function docZabbix(force = false): Promise<DocZabbix> {
++  if (!force && zbxCache && Date.now() - zbxCache.at < CACHE_MS) return zbxCache.v;
++  const r = await docGet<DocZabbix>('/api/zabbix');
++  const v: DocZabbix = { synced: r?.synced ?? null, erro: r?.erro ?? null, intervalo_min: r?.intervalo_min, hosts: r?.hosts ?? {}, nao_encontrados: r?.nao_encontrados ?? [] };
++  zbxCache = { at: Date.now(), v };
++  return v;
++}
++
++/** Interfaces do Zabbix de um equipamento da documentação (todos os hosts ligados a ele), por nome. */
++export function ifsDoEquipamento(d: DocDevice, z: DocZabbix): Map<string, DocIf & { host: string }> {
++  const out = new Map<string, DocIf & { host: string }>();
++  for (const h of d.zabbix_hosts ?? []) {
++    const H = z.hosts[h];
++    if (!H) continue;
++    for (const f of H.ifs ?? []) if (!out.has(f.i)) out.set(f.i, { ...f, host: H.name });
++  }
++  return out;
++}
+diff --git a/backend/src/noc/knowledge.ts b/backend/src/noc/knowledge.ts
+index cb115cf..822358d 100644
+--- a/backend/src/noc/knowledge.ts
++++ b/backend/src/noc/knowledge.ts
+@@ -2,7 +2,9 @@
+  * Base de conhecimento do backbone e da rede FTTH.
+  *
+  * Fonte, em ordem de preferência:
+- *   1. /api/topology do NOC (recortes "noc" e "isp") — é o que a equipe edita;
++ *   1. Documentação de equipamentos (documentacao.noc.updown.com.br) — equipamentos,
++ *      portas e o espelho do Zabbix; os enlaces saem das descrições das portas;
++ *   1b. /api/topology do sistema NOC antigo, só se NOC_API_URL estiver configurado;
+  *   2. sementes em Topologia-NOC.github.io/public/data (geradas do KMZ do backbone);
+  *   3. documentos Markdown em ianoc-agent/knowledge/ — o conhecimento que não
+  *      está em sistema nenhum (VLANs, procedimentos, contatos de operadora).
+@@ -14,6 +16,7 @@ import { readFile, readdir } from 'node:fs/promises';
+ import path from 'node:path';
+ import { connectorEnabled, nocConfig } from './config.js';
+ import { nocGet } from './connectors/noc.js';
++import { docDevices, docZabbix, ifsDoEquipamento, type DocDevice, type DocZabbix } from './connectors/doc.js';
+ import { matchesQuery, normalize } from './http.js';
+ 
+ export interface Porta { numero: number; nome?: string; capacidade?: string; tipo?: string; status?: string; descricao?: string; zabbix?: Record<string, unknown> }
+@@ -80,7 +83,18 @@ export async function getKnowledge(force = false): Promise<Knowledge> {
+   let noc: TopologyPayload | null = null;
+   let isp: TopologyPayload | null = null;
+   let fonte = `sementes locais (${nocConfig.knowledge.topologiaDataDir})`;
+-  if (connectorEnabled('noc')) {
++  if (connectorEnabled('doc')) {
++    try {
++      const [devices, zbx] = await Promise.all([docDevices(true), docZabbix(true).catch(() => null)]);
++      if (devices.length) {
++        noc = topologiaDaDocumentacao(devices, zbx);
++        fonte = `Documentação do NOC (${nocConfig.doc.baseUrl})${zbx?.synced ? `, Zabbix sincronizado em ${zbx.synced}` : ''}`;
++      }
++    } catch (error) {
++      console.warn('[knowledge] documentação indisponível:', error instanceof Error ? error.message : error);
++    }
++  }
++  if (!noc && connectorEnabled('noc')) {
+     try {
+       [noc, isp] = await Promise.all([
+         nocGet<TopologyPayload>('/api/topology', { scope: 'noc' }),
+@@ -97,7 +111,7 @@ export async function getKnowledge(force = false): Promise<Knowledge> {
+     fonte,
+     carregadoEm: new Date().toISOString(),
+     equipamentos: nonEmpty(noc?.equipamentos, seedEquip),
+-    conexoes: nonEmpty(noc?.conexoes, seedConex),
++    conexoes: noc?.conexoes && fonte.startsWith('Documentação') ? noc.conexoes : nonEmpty(noc?.conexoes, seedConex),
+     pops: nonEmpty(noc?.pops, seedPops),
+     ispPops: nonEmpty(isp?.pops, seedIspPops),
+     caixas: nonEmpty(isp?.caixas, seedCaixas),
+@@ -108,6 +122,96 @@ export async function getKnowledge(force = false): Promise<Knowledge> {
+   return cache;
+ }
+ 
++// ---------------------------------------------------------------- documentação → topologia
++
++const PORTA_RE = /(?:^|[^a-z0-9])((?:\d+)?(?:ge|xge|xgei|gei|gpon|eth|te|hu|fo)[_-]?\d+(?:\/\d+){1,3})\s*$/i;
++
++function capacidadeDe(nome: string): string | undefined {
++  const forcada = nome.match(/\((\d+(?:\.\d+)?[MG])\)\s*$/i)?.[1];
++  if (forcada) return forcada.toUpperCase();
++  const n = nome.toLowerCase();
++  if (n.startsWith('hundred-gigabit')) return '100G';
++  if (n.startsWith('400ge')) return '400G';
++  if (n.startsWith('100ge')) return '100G';
++  if (n.startsWith('40ge')) return '40G';
++  if (n.startsWith('25ge')) return '25G';
++  if (n.startsWith('10ge') || n.startsWith('xge') || n.startsWith('xgei')) return '10G';
++  if (n.startsWith('gpon')) return 'GPON';
++  if (n.startsWith('ge') || n.startsWith('gei')) return '1G';
++  return undefined;
++}
++
++const vazio = (v?: string) => !v || /^(\?\?|-+|livre|vago|n\/?a)$/i.test(v.trim());
++
++/** Converte os equipamentos da documentação no formato da topologia e deduz os enlaces pelas descrições das portas. */
++export function topologiaDaDocumentacao(devices: DocDevice[], zbx: DocZabbix | null): TopologyPayload {
++  const equipamentos: Equipamento[] = devices.map((d) => {
++    const ifs = zbx ? ifsDoEquipamento(d, zbx) : new Map();
++    return {
++      id: d.id,
++      nome: d.name,
++      modelo: d.model || undefined,
++      categoria: d.role || undefined,
++      local: [d.site, d.rack ? `rack ${d.rack}` : ''].filter(Boolean).join(' · ') || undefined,
++      observacao: [d.mgmt ? `gerência ${d.mgmt}` : '', d.notes || ''].filter(Boolean).join(' — ') || undefined,
++      portas: (d.ports ?? []).map((p, i) => {
++        const z = ifs.get(p.i);
++        const st = (z?.st || p.st || '').toLowerCase();
++        return {
++          numero: i + 1,
++          nome: p.i,
++          capacidade: z?.sp || capacidadeDe(p.i),
++          tipo: p.s && !vazio(p.s) ? p.s : undefined,
++          status: vazio(p.d) && st !== 'up' ? 'livre' : st || 'em uso',
++          descricao: vazio(p.d) ? (z?.a || undefined) : p.d,
++          zabbix: z ? Object.fromEntries(Object.entries(z).filter(([k, v]) => k !== 'i' && v !== '' && v !== undefined)) : undefined,
++        };
++      }),
++    };
++  });
++
++  // Enlaces: a descrição da porta cita o outro equipamento ("SW6750-PRAIA-GRANDE-100GE1/0/6").
++  const tokens = (t: string) => normalize(t).replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter((x) => x.length > 1);
++  const nomes = devices.map((d) => ({ id: d.id, alfa: tokens(d.name).filter((x) => !/\d/.test(x)), num: tokens(d.name).filter((x) => /\d/.test(x)) }));
++  const conexoes: Conexao[] = [];
++  const vistos = new Set<string>();
++  // Só portas físicas e LAGs: subinterface (.100), VLANIF, VE e loopback repetem o mesmo enlace.
++  const logica = (nome: string) => /\.\d+$/.test(nome) || /^(vlanif|ve|loopback|null|nve|tunnel|meth)/i.test(nome);
++  const chavePorta = (id: string, porta: string) => `${id}|${porta.toLowerCase().replace(/\(.*\)$/, '').replace(/[-_\s]/g, '')}`;
++  for (const d of devices) {
++    for (const p of d.ports ?? []) {
++      if (vazio(p.d) || logica(p.i) || /interface em down|reserva|livre/i.test(p.d!)) continue;
++      const texto = ` ${tokens(p.d!).join(' ')} `;
++      const candidatos = nomes
++        .filter((n) => n.id !== d.id && n.alfa.length && n.alfa.every((a) => texto.includes(` ${a} `) || texto.includes(a)))
++        .map((n) => ({ id: n.id, completo: n.num.every((x) => texto.includes(x)) }));
++      const completos = candidatos.filter((c) => c.completo);
++      const alvo = completos.length === 1 ? completos[0] : !completos.length && candidatos.length === 1 ? candidatos[0] : null;
++      if (!alvo) continue;
++      const portaDestino = p.d!.match(PORTA_RE)?.[1];
++      const chave = chavePorta(d.id, p.i);
++      const inversa = portaDestino ? chavePorta(alvo.id, portaDestino) : '';
++      if (vistos.has(chave) || (inversa && vistos.has(inversa))) continue;
++      // LAG com o mesmo nome dos dois lados (Eth-Trunk50 ↔ Eth-Trunk50) sem porta citada: já contado.
++      if (!portaDestino && conexoes.some((c) => c.origem === alvo.id && c.destino === d.id && String(c.portaOrigem) === p.i)) continue;
++      vistos.add(chave);
++      if (inversa) vistos.add(inversa);
++      conexoes.push({ origem: d.id, portaOrigem: p.i, destino: alvo.id, portaDestino, capacidade: capacidadeDe(p.i), tipo: p.s && !vazio(p.s) ? p.s : undefined });
++    }
++  }
++
++  // Sites viram POPs.
++  const sites = [...new Set(devices.map((d) => d.site).filter(Boolean))] as string[];
++  const pops: Pop[] = sites.map((nome) => ({
++    id: normalize(nome).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
++    nome,
++    tipo: 'site',
++    observacao: devices.filter((d) => d.site === nome).map((d) => d.name).join(', '),
++  }));
++
++  return { equipamentos, conexoes, pops };
++}
++
+ // ---------------------------------------------------------------- resumo para o system prompt
+ 
+ function portSummary(e: Equipamento) {
+diff --git a/backend/src/noc/native/engine.ts b/backend/src/noc/native/engine.ts
+index efb6438..d4a96f0 100644
+--- a/backend/src/noc/native/engine.ts
++++ b/backend/src/noc/native/engine.ts
+@@ -453,6 +453,7 @@ const webZabbix = () => { const z = nocConfig.zabbix[0]?.url; return z ? z.repla
+ const webIxc = () => { const o = origem(nocConfig.ixc.baseUrl); return o ? `${o}/adm.php` : undefined; };
+ const webOpa = () => { const o = origem(nocConfig.opa.baseUrl); return o ? `${o}/atendente/` : undefined; };
+ const webNoc = () => origem(nocConfig.noc.baseUrl);
++const webDoc = () => origem(nocConfig.doc.baseUrl);
+ 
+ /**
+  * "Abre o Zabbix", "abre o IXC e o Opa", "abre o mapa da CTO 366", "pesquisa X no Google",
+@@ -482,7 +483,8 @@ async function abrir(t: Turn, q: Parsed): Promise<string> {
+   }
+   if (/\bixc\b/.test(tx)) { const u = webIxc(); if (u) alvos.push({ url: u, label: 'IXC' }); }
+   if (/\bopa\b/.test(tx)) { const u = webOpa(); if (u) alvos.push({ url: u, label: 'Opa! Suite' }); }
+-  if (/\bsistema( do)? noc\b|\bpainel( do)? noc\b|\bnoc\b/.test(tx) && !/\bzabbix\b/.test(tx)) { const u = webNoc(); if (u) alvos.push({ url: u, label: 'Sistema NOC' }); }
++  if (/\bdocumenta(cao|ção)\b|\brack/.test(tx)) { const u = webDoc(); if (u) alvos.push({ url: u, label: 'Documentação do NOC' }); }
++  else if (/\bsistema( do)? noc\b|\bpainel( do)? noc\b|\bnoc\b/.test(tx) && !/\bzabbix\b/.test(tx)) { const u = webNoc() ?? webDoc(); if (u) alvos.push({ url: u, label: webNoc() ? 'Sistema NOC' : 'Documentação do NOC' }); }
+   if (q.caixa || /\b(cto|ceo|caixa)\b/.test(tx)) {
+     const termo = q.caixa ?? q.original.replace(/^.*?\b(cto|ceo|caixa)\b/i, '$1').replace(/[?!.]+$/, '');
+     const r = await t.call<{ caixas?: Array<{ nome: string; lat?: number; lon?: number }> }>('ftth_buscar', { termo, tipo: 'caixa' });
+@@ -679,7 +681,15 @@ async function onus(t: Turn, q: Parsed): Promise<string> {
+         table(['Cliente/ONU', 'OLT', 'PON', 'Status', 'RX (dBm)', 'TX (dBm)'], items.slice(0, 25).map((c) => [c.name ?? c.nome ?? c.serial, c.olt, c.pon, c.status, c.rx_power, c.tx_power]))].join('\n\n');
+     }
+   }
+-  // Sem o sistema NOC: alarmes de cliente no Zabbix (LOS, energia, sinal).
++  // Sem o sistema NOC: resumo das PONs pela documentação + alarmes de cliente no Zabbix.
++  let ponTxt = '';
++  if (on('doc')) {
++    const p = await t.call<{ total: number; zabbix_sincronizado?: string; items: Rec[] }>('doc_pon', { apenas_problema: true, limite: 30 });
++    if (p.ok && (p.data.items ?? []).length) {
++      ponTxt = [`PONs com sinal ruim pela documentação (Zabbix de ${p.data.zabbix_sincronizado ?? '—'}):`,
++        table(['OLT', 'PON', 'ONUs', 'Sinal baixo', 'RX médio', 'Pior ONU'], (p.data.items ?? []).slice(0, 20).map((l) => [l.olt, l.pon, l.onus, l.sinal_baixo, l.rx_medio, l.pior_onu]))].join('\n\n');
++    }
++  }
+   const r = await t.call<{ problems: Problem[] }>('zabbix_problemas', { severidade_minima: 2, limite: 300, ...(busca ? { host: busca } : {}) });
+   if (!r.ok) return `Não consegui consultar as ONUs: ${r.text}`;
+   const ps = (r.data.problems ?? []).filter((p) => /\blos\b|sinal|dbm|onu|ont|energia|desconect|dying/i.test(p.problema));
+@@ -689,7 +699,8 @@ async function onus(t: Turn, q: Parsed): Promise<string> {
+     ps.length ? `O Zabbix mostra ${plural(ps.length, 'cliente/ONU com problema', 'clientes/ONUs com problema')} agora.` : 'Nenhuma ONU com alarme no Zabbix agora.',
+     ps.length ? counts(causas, 'Causa') : '',
+     ps.length ? table(['Cliente', 'Problema', 'Severidade', 'Desde'], ps.slice(0, 20).map((p) => [p.host, cut(p.problema, 80), p.severidade, p.desde])) : '',
+-    on('noc') ? '' : '_O sinal RX/TX das ONUs vem do sistema NOC, que não está configurado neste servidor; mostrei os alarmes do Zabbix._',
++    ponTxt,
++    on('noc') || on('doc') ? '' : '_O sinal das PONs vem da documentação do NOC, que não está configurada neste servidor; mostrei os alarmes do Zabbix._',
+   ].filter(Boolean).join('\n\n');
+ }
+ 
+diff --git a/backend/src/noc/prompt.ts b/backend/src/noc/prompt.ts
+index 7aee1fa..bbeaefd 100644
+--- a/backend/src/noc/prompt.ts
++++ b/backend/src/noc/prompt.ts
+@@ -37,7 +37,8 @@ Quem fala com você é a equipe do NOC, suporte técnico e campo. Responda em po
+ - A personalidade nunca muda um número: tudo o que for dado vem das ferramentas.
+ 
+ ## Ambientes que você consulta (somente leitura)
+-- Sistema NOC (topologia, espelho Zabbix de interfaces/tráfego, estado GPON das OLTs ZTE C300/C350, log RADIUS, clientes do IXC, tickets): ${estado(conectores.noc)}
++- Documentação do NOC — documentacao.noc.updown.com.br (equipamentos, portas, racks, sites e o espelho Zabbix de interfaces, sinal óptico e resumo das PONs das OLTs; ferramentas doc_*): ${estado(conectores.doc)}
++${conectores.noc ? '- Sistema NOC antigo (estado GPON por ONU, RADIUS, clientes, tickets): conectado' : ''}
+ - Zabbix direto (alarmes ativos, eventos de um período e qualquer consulta .get): ${conectores.zabbix ? `conectado — instâncias: ${zabbixInstanceNames().join(', ')} (a primeira é a principal)` : 'NÃO configurado'}
+ - GenieACS / TR-069 (ONTs e roteadores dos clientes): ${estado(conectores.genieacs)}
+ - IXC Soft / ERP (cliente, contrato, login PPPoE, O.S., financeiro): ${estado(conectores.ixc)}
+@@ -47,11 +48,11 @@ Quem fala com você é a equipe do NOC, suporte técnico e campo. Responda em po
+ ## Como trabalhar
+ - Datas e horas que as ferramentas devolvem já estão no horário de São Paulo (AAAA-MM-DD HH:MM:SS). Diga "desde ontem às 20h53", nunca converta de novo. Ao resumir, confira a data de cada item: alarme aberto há dias não "começou hoje".
+ - Dado de estado (o que está up/down, sinal, tráfego, alarme, cliente online) sempre vem de ferramenta, nunca de memória. Consulte antes de afirmar, e diga de qual sistema e de quando é o dado.
+-- Cruze as fontes. Cliente sem internet: cadastro/login (NOC ou IXC) → ONU na OLT (status e RX) → RADIUS → CPE no GenieACS → alarmes da PON/OLT/enlace no Zabbix. Queda em massa: histórico GPON do parque, agrupe por OLT/PON, e confira enlaces e alarmes do caminho até o núcleo.
++- Cruze as fontes. Cliente sem internet: cadastro/login no IXC → PON da OLT (doc_pon) → CPE no GenieACS → alarmes da PON/OLT/enlace no Zabbix. Queda em massa: alarmes do Zabbix agrupados por OLT/PON, PONs com problema (doc_pon) e enlaces do caminho até o núcleo (doc_interfaces, backbone_caminho).
+ - Rode em paralelo as consultas que não dependem uma da outra.
+ - Referências de sinal GPON (classe B+/C+): RX na ONU entre -8 e -27 dBm é normal; abaixo de -27 é atenção; abaixo de -30 ou LOS indica fibra rompida, conector sujo ou atenuação na CTO/splitter. Dying-gasp é falta de energia no cliente, não problema de fibra.
+ - Se um ambiente não está configurado ou deu erro, diga isso claramente e siga com o que tem. Nunca invente host, porta, cliente, sinal ou número.
+-- Você não executa ações na rede (reboot, provisionamento, troca de Wi-Fi, desbloqueio). Quando uma ação resolver, diga qual, onde fazer (tela do NOC, GenieACS, IXC ou CLI da OLT) e o comando sugerido, para um humano executar.
++- Você não executa ações na rede (reboot, provisionamento, troca de Wi-Fi, desbloqueio). Quando uma ação resolver, diga qual, onde fazer (painéis do NOC, GenieACS, IXC ou CLI da OLT) e o comando sugerido, para um humano executar.
+ - Documentos pessoais de cliente chegam mascarados; não peça nem repita CPF/CNPJ completos.
+ - Formate em Markdown: tabelas para listas de ONUs/interfaces/alarmes, blocos de código para comandos de CLI.
+ 
+diff --git a/backend/src/noc/tools.ts b/backend/src/noc/tools.ts
+index b585bf8..ce2cace 100644
+--- a/backend/src/noc/tools.ts
++++ b/backend/src/noc/tools.ts
+@@ -13,6 +13,7 @@ import { connectorEnabled, nocConfig, type ConnectorName } from './config.js';
+ // Rankings dos relatórios: menores quando o modelo tem cota pequena por minuto (modo compacto).
+ const topPadrao = () => (nocConfig.llm.provider !== 'anthropic' && nocConfig.openai.compactPrompt ? 5 : 15);
+ import { nocGet } from './connectors/noc.js';
++import { docDevices, docZabbix, ifsDoEquipamento } from './connectors/doc.js';
+ import { activeProblems, problemEventsReport, zabbixCall, zabbixInstanceNames } from './connectors/zabbix.js';
+ import { deviceFaults, findDevices, pendingTasks } from './connectors/genieacs.js';
+ import { IXC_OPERATORS, IXC_RESOURCES, ixcClientesPorPlano, ixcList, ixcOsResumo } from './connectors/ixc.js';
+@@ -122,6 +123,79 @@ const TOOLS = [
+     run: async ({ lat, lon, raio_m, limite: n }) => nearFtth(await getKnowledge(), lat, lon, raio_m ?? 500, n ?? 15),
+   }),
+ 
++  // ------------------------------------------------------------ Documentação do NOC (documentacao.noc.updown.com.br)
++  tool({
++    name: 'doc_equipamentos',
++    connector: 'doc',
++    description: 'Documentação de equipamentos do NOC: equipamento, modelo, site/POP, rack, função, IP de gerência, observações e hosts do Zabbix ligados. Busque por nome, site, modelo, função ou IP.',
++    schema: z.object({ busca: z.string().optional(), limite: limite(30, 200) }),
++    run: async ({ busca, limite: n }) => {
++      const devs = (await docDevices()).map(({ ports, ...d }) => ({ ...d, portas: ports?.length ?? 0 }));
++      return limitList(devs.filter((d) => matchesQuery(d, busca)), n ?? 30);
++    },
++  }),
++  tool({
++    name: 'doc_interfaces',
++    connector: 'doc',
++    description: 'Portas/interfaces documentadas de um equipamento com o estado do Zabbix (status UP/DOWN, velocidade, RX/TX óptico em dBm, bits de entrada/saída e, nas PONs das OLTs, ONUs, RX médio, ONUs com sinal baixo e pior ONU). Filtre por equipamento e, se quiser, por texto ou status.',
++    schema: z.object({
++      equipamento: z.string().optional().describe('nome ou id do equipamento (ex.: "F1A CENTRAL", "OLT C300")'),
++      q: z.string().optional().describe('texto na interface ou descrição (ex.: "100GE0/1/48", "PRAIA GRANDE")'),
++      status: z.enum(['up', 'down']).optional(),
++      apenas_problema: z.boolean().optional().describe('só portas documentadas que estão DOWN/PARCIAL ou com sinal pior que -27 dBm'),
++      limite: limite(80, 500),
++    }),
++    run: async ({ equipamento, q, status, apenas_problema, limite: n }) => {
++      const [devs, z] = await Promise.all([docDevices(), docZabbix()]);
++      const alvo = equipamento ? devs.filter((d) => matchesQuery({ id: d.id, nome: d.name }, equipamento)) : devs;
++      if (equipamento && !alvo.length) return { erro: `equipamento "${equipamento}" não está na documentação` };
++      const linhas = alvo.flatMap((d) => {
++        const ifs = ifsDoEquipamento(d, z);
++        return (d.ports ?? []).map((p) => {
++          const zi = ifs.get(p.i);
++          return {
++            equipamento: d.name, interface: p.i, descricao: p.d, servico: p.s, observacao: p.o,
++            status_doc: p.st, status_zabbix: zi?.st, velocidade: zi?.sp, rx_dbm: zi?.rx, tx_dbm: zi?.tx,
++            entrada_bps: zi?.in, saida_bps: zi?.out, onus: zi?.onus, rx_medio_onus: zi?.rxm, onus_sinal_baixo: zi?.low, pior_onu: zi?.worst,
++          };
++        });
++      });
++      const dbm = (v: unknown) => Number(String(v ?? '').replace(',', '.').replace(/[^-\d.]/g, ''));
++      const filtradas = linhas.filter((l) => {
++        const st = String(l.status_zabbix || l.status_doc || '').toLowerCase();
++        if (status && st !== status) return false;
++        if (apenas_problema) {
++          const usada = l.descricao && !/^\?\?$|interface em down|reserva|livre/i.test(String(l.descricao));
++          const rx = dbm(l.rx_dbm);
++          if (!(usada && (/down|parcial/.test(st) || (Number.isFinite(rx) && rx < -27)))) return false;
++        }
++        return matchesQuery({ i: l.interface, d: l.descricao, s: l.servico }, q);
++      });
++      return { zabbix_sincronizado: z.synced, ...(z.erro ? { erro_zabbix: z.erro } : {}), ...limitList(filtradas, n ?? 80) };
++    },
++  }),
++  tool({
++    name: 'doc_pon',
++    connector: 'doc',
++    description: 'Resumo das PONs das OLTs pela documentação + Zabbix: ONUs por PON, RX médio, ONUs com sinal baixo e pior ONU. Use para "qual PON está com sinal ruim?" ou "como está a PON 1/2/3 da C300?".',
++    schema: z.object({
++      olt: z.string().optional().describe('nome da OLT (ex.: "C300", "C350")'),
++      pon: z.string().optional().describe('posição da PON, ex.: "1/2/3"'),
++      apenas_problema: z.boolean().optional().describe('só PONs com ONUs de sinal baixo, pior ONU < -27 dBm ou porta DOWN'),
++      limite: limite(50, 300),
++    }),
++    run: async ({ olt, pon, apenas_problema, limite: n }) => {
++      const [devs, z] = await Promise.all([docDevices(), docZabbix()]);
++      const olts = devs.filter((d) => /olt/i.test(`${d.role} ${d.name}`) && (!olt || matchesQuery({ n: d.name }, olt)));
++      const dbm = (v: unknown) => Number(String(v ?? '').replace(',', '.').replace(/[^-\d.]/g, ''));
++      const linhas = olts.flatMap((d) => [...ifsDoEquipamento(d, z).values()]
++        .filter((f) => /^gpon/i.test(f.i) && (!pon || f.i.endsWith(`_${pon}`) || f.i.includes(pon)))
++        .map((f) => ({ olt: d.name, pon: f.i.replace(/^gpon[-_]?(olt_)?/i, ''), status: f.st, onus: f.onus, rx_medio: f.rxm, sinal_baixo: f.low, pior_onu: f.worst, rx_modulo: f.rx, tx_modulo: f.tx })))
++        .filter((l) => !apenas_problema || Number(l.sinal_baixo) > 0 || dbm(l.pior_onu) < -27 || /down/i.test(String(l.status)));
++      return { zabbix_sincronizado: z.synced, ...limitList(linhas, n ?? 50) };
++    },
++  }),
++
+   // ------------------------------------------------------------ sistema NOC
+   tool({
+     name: 'noc_visao_geral',
+@@ -391,7 +465,7 @@ export function availableTools(): Anthropic.Beta.Messages.BetaTool[] {
+ }
+ 
+ export function connectorStatus() {
+-  const nomes: Array<ConnectorName> = ['noc', 'zabbix', 'genieacs', 'ixc', 'opa'];
++  const nomes: Array<ConnectorName> = ['doc', 'noc', 'zabbix', 'genieacs', 'ixc', 'opa'];
+   return Object.fromEntries(nomes.map((n) => [n, connectorEnabled(n)]));
+ }
+ 
+diff --git a/deploy/deploy.sh b/deploy/deploy.sh
+index bef6b47..12aa445 100644
+--- a/deploy/deploy.sh
++++ b/deploy/deploy.sh
+@@ -20,7 +20,7 @@ set -euo pipefail
+ TARGET="${1:?uso: deploy.sh usuario@host [porta-ssh]  |  deploy.sh --offline}"
+ OFFLINE=; [ "$TARGET" = "--offline" ] && OFFLINE=1
+ # Chaves levadas do backend/.env local no modo offline (só as preenchidas).
+-ENV_KEYS='LLM_PROVIDER|LLM_MODEL|LLM_API_KEY|LLM_BASE_URL|LLM_REASONING_EFFORT|ZABBIX[23]?_(NAME|URL|TOKEN|USER|PASSWORD)|IXC_BASE_URL|IXC_API_TOKEN|OPA_URL|OPA_TOKEN|STT_BASE_URL|STT_API_KEY|STT_MODEL|TTS_PROVIDER|TTS_VOICE|FISH_API_KEY|FISH_VOICE_ID|FISH_MODEL|KOKORO_VOICE|KOKORO_DTYPE|KOKORO_SPEED|IANOC_ADMIN_USER|IANOC_ADMIN_NAME|IANOC_ADMIN_PASSWORD|IANOC_ADMIN_TROCA_SENHA|IANOC_AUTH|BRAVE_API_KEY|SEARXNG_URL|TAVILY_API_KEY|NOC_API_URL|NOC_API_USER|NOC_API_PASSWORD|GENIEACS_NBI_URL|IANOC_GERAL_LLM|IANOC_GERAL_MODEL|IANOC_GERAL_API_KEY|IANOC_GERAL_BASE_URL|IANOC_GERAL_REASONING|IANOC_ACESSO_PUBLICO|IANOC_DEV_LLM|IANOC_DEV_MODEL|IANOC_DEV_TIMEOUT_MS|IANOC_TV_HISTORICO|LLM_MODELOS_RESERVA|IANOC_VISAO_MODEL'
++ENV_KEYS='LLM_PROVIDER|LLM_MODEL|LLM_API_KEY|LLM_BASE_URL|LLM_REASONING_EFFORT|ZABBIX[23]?_(NAME|URL|TOKEN|USER|PASSWORD)|IXC_BASE_URL|IXC_API_TOKEN|OPA_URL|OPA_TOKEN|STT_BASE_URL|STT_API_KEY|STT_MODEL|TTS_PROVIDER|TTS_VOICE|FISH_API_KEY|FISH_VOICE_ID|FISH_MODEL|KOKORO_VOICE|KOKORO_DTYPE|KOKORO_SPEED|IANOC_ADMIN_USER|IANOC_ADMIN_NAME|IANOC_ADMIN_PASSWORD|IANOC_ADMIN_TROCA_SENHA|IANOC_AUTH|BRAVE_API_KEY|SEARXNG_URL|TAVILY_API_KEY|NOC_API_URL|NOC_API_USER|NOC_API_PASSWORD|NOC_AUTH_URL|DOC_API_URL|DOC_AUTH|DOC_LOGIN_URL|DOC_API_USER|DOC_API_PASSWORD|PORTAL_URL|GENIEACS_NBI_URL|IANOC_GERAL_LLM|IANOC_GERAL_MODEL|IANOC_GERAL_API_KEY|IANOC_GERAL_BASE_URL|IANOC_GERAL_REASONING|IANOC_ACESSO_PUBLICO|IANOC_DEV_LLM|IANOC_DEV_MODEL|IANOC_DEV_TIMEOUT_MS|IANOC_TV_HISTORICO|LLM_MODELOS_RESERVA|IANOC_VISAO_MODEL'
+ SSH_PORT="${2:-22}"
+ KEY="${IANOC_SSH_KEY:-$HOME/.ssh/ianoc_deploy}"
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+diff --git a/deploy/ianoc.env.example b/deploy/ianoc.env.example
+index 3121fec..fee4c06 100644
+--- a/deploy/ianoc.env.example
++++ b/deploy/ianoc.env.example
+@@ -77,11 +77,26 @@ ANTHROPIC_API_KEY=
+ CLAUDE_MODEL=claude-opus-5
+ CLAUDE_EFFORT=high
+ 
+-# ---------------- Sistema NOC (obrigatório para o login)
+-NOC_API_URL=https://sistema.updown.com.br
+-# Usuário de serviço só leitura para as consultas do assistente
+-NOC_API_USER=
+-NOC_API_PASSWORD=
++# ---------------- Login dos usuários: Portal NOC (login único)
++# Os usuários entram com o mesmo login/senha criados no Portal NOC.
++NOC_AUTH_URL=https://portal.updown.com.br/sso/ianoc
++
++# ---------------- Documentação do NOC (fonte do backbone e das interfaces do Zabbix)
++DOC_API_URL=https://documentacao.noc.updown.com.br
++# portal = entra pelo Portal NOC (a documentação fica atrás do login único no nginx)
++# local  = login próprio da documentação (LOGIN_USUARIO do config.env dela)
++# nenhum = documentação sem login (só rede interna)
++DOC_AUTH=portal
++DOC_LOGIN_URL=https://portal.updown.com.br
++# Usuário de serviço criado no portal, perfil Analista, com o sistema "documentacao" liberado
++DOC_API_USER=
++DOC_API_PASSWORD=
++
++# ---------------- Sistema NOC antigo (sistema.updown.com.br) — DESATIVADO
++# O IA NOC não usa mais o sistema.updown.com.br. Deixe vazio.
++# NOC_API_URL=
++# NOC_API_USER=
++# NOC_API_PASSWORD=
+ 
+ # ---------------- Zabbix
+ ZABBIX_NAME=updown
+diff --git a/deploy/install.sh b/deploy/install.sh
+index f7f59c0..02250c9 100644
+--- a/deploy/install.sh
++++ b/deploy/install.sh
+@@ -105,7 +105,8 @@ case "${PROVIDER:-nativo}" in
+   nativo|ollama) ;;
+   *) grep -qE '^LLM_API_KEY=.+' "$ENV_FILE" || missing+=(LLM_API_KEY) ;;
+ esac
+-grep -qE '^NOC_API_URL=.+' "$ENV_FILE" || missing+=(NOC_API_URL)
++grep -qE '^NOC_AUTH_URL=.+' "$ENV_FILE" || missing+=(NOC_AUTH_URL)
++grep -qE '^DOC_API_URL=.+' "$ENV_FILE" || missing+=(DOC_API_URL)
+ 
+ systemctl restart ianoc
+ sleep 3
+-- 
+2.43.0
+
