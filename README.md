@@ -41,6 +41,9 @@ Os destinos ficam editáveis na tela **Redirecionamentos** (a semente está em `
    `GET /sso/verificar?sistema=<id>` antes de servir cada página.
    `204` libera, `401` manda para o login do portal (e volta para o painel depois), `403` = usuário sem acesso àquele sistema.
    Arquivos: `integracoes/nginx/`.
+   **Para ligar tudo de uma vez**: no servidor dos painéis, `cd nocup && git pull && sudo bash vincular-portal.sh`
+   (reescreve os sites do nginx, liga `PORTAL=1` no PON e na documentação e importa os usuários antigos; `--desfazer` volta).
+   `sistema` aceita lista (`links,tv-links,tv-isp`): libera quem tiver qualquer um deles.
 3. **IA NOC**: os usuários entram com o mesmo login pela API compatível `/sso/ianoc/api/auth/{login,me,logout}`.
    Os dados do IA NOC continuam vindo do `sistema.updown.com.br`. Aplique `integracoes/ianoc/ianoc-login-portal.patch`
    no repositório IANOC e configure `NOC_AUTH_URL=https://portal.updown.com.br/sso/ianoc` (mantenha `NOC_API_URL=https://sistema.updown.com.br`).

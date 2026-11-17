@@ -440,11 +440,14 @@ async function handle(req, res) {
   // ------------------------------------------------ SSO para o nginx (auth_request)
   // 204 = liberado (com X-Portal-User), 401 = sem sessão, 403 = sem permissão para o sistema.
   if (p === "/sso/verificar" && (method === "GET" || method === "HEAD")) {
-    const sid = url.searchParams.get("sistema") || req.headers["x-portal-sistema"] || "";
-    const s = findSistema(String(sid));
+    // Aceita uma lista ("links,tv-links,tv-isp"): libera se o usuário tiver qualquer um deles
+    // (ex.: a API de dados do Painel de Links, usada também pelas telas de TV).
+    const sid = String(url.searchParams.get("sistema") || req.headers["x-portal-sistema"] || "");
     const sess = sessionFromReq(req);
     if (!sess) return send(res, 401, "", { "Cache-Control": "no-store" });
-    if (!s || !s.ativo || !canSee(sess.user, s.id)) return send(res, 403, "", { "Cache-Control": "no-store" });
+    const s = sid.split(",").map((x) => findSistema(x.trim()))
+      .find((x) => x && x.ativo && canSee(sess.user, x.id));
+    if (!s) return send(res, 403, "", { "Cache-Control": "no-store" });
     auditSso(req, sess.user.username, s.id);
     return send(res, 204, "", {
       "Cache-Control": "no-store",

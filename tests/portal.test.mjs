@@ -43,6 +43,9 @@ test("usuário criado pelo admin usa o mesmo login no SSO do nginx e na API do I
   assert.equal((await fetch(`${base}/sso/verificar?sistema=olts`, { headers: { Cookie: cookie } })).status, 204);
   assert.equal((await fetch(`${base}/sso/verificar?sistema=pon`, { headers: { Cookie: cookie } })).status, 403);
   assert.equal((await fetch(`${base}/sso/verificar?sistema=olts`)).status, 401);
+  // lista de sistemas: libera se tiver qualquer um deles
+  assert.equal((await fetch(`${base}/sso/verificar?sistema=pon,olts`, { headers: { Cookie: cookie } })).status, 204);
+  assert.equal((await fetch(`${base}/sso/verificar?sistema=pon,links`, { headers: { Cookie: cookie } })).status, 403);
   // API compatível (IA NOC)
   r = await fetch(`${base}/sso/ianoc/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "joao.silva", password: "senha-forte-1" }) });
   const d = await r.json();
