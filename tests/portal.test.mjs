@@ -7,6 +7,9 @@ import path from "node:path";
 const dir = mkdtempSync(path.join(tmpdir(), "portal-"));
 process.env.DATA_DIR = dir;
 process.env.COOKIE_SECURE = "0";
+// Senha só de teste (o servidor não tem mais senha/hash do admin no código).
+const ADMIN_PW = "senha-de-teste-admin-1";
+process.env.SEED_ADMIN_PASSWORD = ADMIN_PW;
 const { start } = await import("../server.mjs");
 let server, base;
 before(async () => { server = await start({ port: 0, host: "127.0.0.1" }); base = `http://127.0.0.1:${server.address().port}`; });
@@ -19,7 +22,7 @@ async function login(username, password) {
 }
 
 test("admin inicial entra com a senha definida", async () => {
-  const { r, cookie } = await login("luis.felipe", "Tflnx155@");
+  const { r, cookie } = await login("luis.felipe", ADMIN_PW);
   assert.equal(r.status, 200);
   assert.match(cookie, /^updown_sso=/);
   const me = await (await fetch(`${base}/api/me`, { headers: { Cookie: cookie } })).json();
@@ -33,7 +36,7 @@ test("senha errada é recusada e login sem X-Portal é bloqueado", async () => {
 });
 
 test("usuário criado pelo admin usa o mesmo login no SSO do nginx e na API do IA NOC", async () => {
-  const { cookie: adm } = await login("luis.felipe", "Tflnx155@");
+  const { cookie: adm } = await login("luis.felipe", ADMIN_PW);
   let r = await fetch(`${base}/api/users`, { method: "POST", headers: { ...H, Cookie: adm },
     body: JSON.stringify({ username: "joao.silva", name: "João Silva", password: "senha-forte-1", role: "analista", sistemas: ["olts", "ianoc"] }) });
   assert.equal(r.status, 201);
@@ -62,17 +65,17 @@ test("usuário criado pelo admin usa o mesmo login no SSO do nginx e na API do I
 });
 
 test("não deixa remover o último administrador nem redirecionar para fora", async () => {
-  const { cookie: adm } = await login("luis.felipe", "Tflnx155@");
+  const { cookie: adm } = await login("luis.felipe", ADMIN_PW);
   const r = await fetch(`${base}/api/users/luis.felipe`, { method: "PUT", headers: { ...H, Cookie: adm }, body: JSON.stringify({ role: "analista" }) });
   assert.equal(r.status, 400);
-  const l = await fetch(`${base}/api/login`, { method: "POST", headers: H, body: JSON.stringify({ username: "luis.felipe", password: "Tflnx155@", volta: "https://evil.example.com/" }) });
+  const l = await fetch(`${base}/api/login`, { method: "POST", headers: H, body: JSON.stringify({ username: "luis.felipe", password: ADMIN_PW, volta: "https://evil.example.com/" }) });
   assert.equal((await l.json()).volta, "/");
-  const ok = await fetch(`${base}/api/login`, { method: "POST", headers: H, body: JSON.stringify({ username: "luis.felipe", password: "Tflnx155@", volta: "https://monitoramento.updown.com.br:8443/" }) });
+  const ok = await fetch(`${base}/api/login`, { method: "POST", headers: H, body: JSON.stringify({ username: "luis.felipe", password: ADMIN_PW, volta: "https://monitoramento.updown.com.br:8443/" }) });
   assert.equal((await ok.json()).volta, "https://monitoramento.updown.com.br:8443/");
 });
 
 test("redirecionamento /ir registra e leva ao destino", async () => {
-  const { cookie } = await login("luis.felipe", "Tflnx155@");
+  const { cookie } = await login("luis.felipe", ADMIN_PW);
   const r = await fetch(`${base}/ir/ianoc`, { headers: { Cookie: cookie }, redirect: "manual" });
   assert.equal(r.status, 302);
   assert.equal(r.headers.get("location"), "https://nia.updown.com.br/");
@@ -92,7 +95,7 @@ test("importa hash pbkdf2 do painel-auth", async () => {
 });
 
 test("setores do usuário chegam aos Treinamentos pelo /sso/quem", async () => {
-  const { cookie: adm } = await login("luis.felipe", "Tflnx155@");
+  const { cookie: adm } = await login("luis.felipe", ADMIN_PW);
   let r = await fetch(`${base}/api/setores`, { headers: { Cookie: adm } });
   const { setores } = await r.json();
   assert.ok(setores.some((s) => s.id === "atendimento"));

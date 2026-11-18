@@ -42,15 +42,16 @@ const ID_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 const MIN_PASSWORD = 8;
 
 // Administrador inicial, criado só quando data/users.json ainda não existe.
-// No código fica apenas o hash scrypt da senha — nunca a senha.
+// Nenhuma senha nem hash fica no código (o repositório é público): a senha vem de
+// SEED_ADMIN_PASSWORD ou é gerada aleatoriamente e gravada UMA vez em
+// data/senha-inicial-admin.txt (0600). Troque-a no primeiro acesso e apague o arquivo.
 const SEED_ADMIN = {
-  username: "luis.felipe",
-  name: "Luis Felipe",
+  username: (process.env.SEED_ADMIN_USERNAME || "luis.felipe").trim().toLowerCase(),
+  name: process.env.SEED_ADMIN_NAME || "Luis Felipe",
   role: "administrador",
   sistemas: ["*"],
-  password_hash:
-    "scrypt$16384$8$1$PMyir7Pl3xR2faAi3icy4w==$JygwiX1RCnWY4wxs97OWpGSnZNt/Ktpv+UuJw2u5g89VEnr1/WXnMwlRM2jLg6OBw3VDrsCrgv3Uh2CwlC8LPA==",
 };
+const SEED_PASSWORD_FILE = path.join(DATA_DIR, "senha-inicial-admin.txt");
 
 // ================================================================ senhas
 export function hashPassword(password) {
@@ -112,9 +113,17 @@ async function loadAll() {
 
   if (!existsSync(USERS_FILE)) {
     const now = new Date().toISOString();
-    users = [{ ...SEED_ADMIN, active: true, sv: 0, created_at: now, updated_at: now, last_login: null }];
+    let senha = process.env.SEED_ADMIN_PASSWORD || "";
+    if (senha && senha.length < MIN_PASSWORD) throw new Error(`SEED_ADMIN_PASSWORD precisa de ${MIN_PASSWORD}+ caracteres`);
+    if (!senha) {
+      senha = crypto.randomBytes(18).toString("base64url");
+      writeFileSync(SEED_PASSWORD_FILE, `${SEED_ADMIN.username}\n${senha}\n`, { mode: 0o600 });
+    }
+    users = [{ ...SEED_ADMIN, password_hash: hashPassword(senha), active: true, sv: 0, created_at: now, updated_at: now, last_login: null }];
     await saveUsers();
     console.log(`[portal] usuários criados em ${USERS_FILE} (admin: ${SEED_ADMIN.username})`);
+    if (!process.env.SEED_ADMIN_PASSWORD)
+      console.log(`[portal] senha inicial do admin gravada em ${SEED_PASSWORD_FILE} — troque no primeiro acesso e apague o arquivo`);
   } else {
     users = JSON.parse(await fs.readFile(USERS_FILE, "utf8")).users || [];
   }
@@ -258,15 +267,27 @@ function parseCookies(req) {
   return out;
 }
 
+// Só confia em X-Real-IP quando a conexão vem do proxy local (Caddy/nginx no
+// mesmo host, que SOBRESCREVEM o cabeçalho com o IP real) ou de TRUST_PROXY.
+// Vindo de qualquer outro lugar, o cabeçalho é do cliente e burlaria o bloqueio
+// por tentativas e os logs. X-Forwarded-For não é usado: o 1º item é do cliente.
+const TRUST_PROXY = new Set(String(process.env.TRUST_PROXY || "").split(",").map((s) => s.trim()).filter(Boolean));
+const isLoopback = (a) => a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
 function clientIp(req) {
-  const xr = String(req.headers["x-real-ip"] || "").trim();
-  const xf = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return xr || xf || req.socket.remoteAddress || "";
+  const peer = req.socket.remoteAddress || "";
+  if (isLoopback(peer) || TRUST_PROXY.has(peer)) {
+    const xr = String(req.headers["x-real-ip"] || "").trim();
+    if (xr) return xr;
+  }
+  return peer;
 }
 
 function isHttps(req) {
   if (/^(1|true|sim)$/i.test(COOKIE_SECURE)) return true;
   if (/^(0|false|nao|não)$/i.test(COOKIE_SECURE)) return false;
+  // auto: o portal publicado em https sempre marca Secure, mesmo que o proxy
+  // esqueça o X-Forwarded-Proto. Para http local use COOKIE_SECURE=0 (npm run dev).
+  if (PORTAL_URL.startsWith("https://")) return true;
   return req.headers["x-forwarded-proto"] === "https" || !!req.socket.encrypted;
 }
 

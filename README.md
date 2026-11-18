@@ -17,8 +17,10 @@ O portal também concentra os links (redirecionamentos) e registra quem acessou 
 | Logs de acesso | administrador | Logins, senhas erradas, acessos por sistema, com filtros |
 | Integrações | administrador | Como cada plataforma usa o login do portal (blocos prontos para copiar) |
 
-Administrador inicial: **luis.felipe** (a senha é a combinada; no código só existe o hash scrypt).
-Ele é criado no primeiro start, em `data/users.json`.
+Administrador inicial: **luis.felipe** (ou `SEED_ADMIN_USERNAME`). Ele é criado no primeiro
+start, em `data/users.json`, com a senha de `SEED_ADMIN_PASSWORD` ou, sem ela, uma senha
+aleatória gravada em `data/senha-inicial-admin.txt` (0600). Troque a senha no primeiro
+acesso e apague o arquivo. Nenhuma senha ou hash fica no código.
 
 ## Plataformas
 
